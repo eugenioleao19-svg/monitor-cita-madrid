@@ -33,46 +33,62 @@ def enviar_alerta(mensagem):
         except Exception as e:
             print(f"Erro ao enviar aviso: {e}")
 
-def verificar_vaga():
+def tentar_avancar_pagina():
     session = requests.Session()
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://gestiona7.madrid.org/ctac_cita/registro"
     }
     
     try:
+        # Passo 1: Obter a página inicial
         resposta = session.get(URL, headers=headers, timeout=15)
-        if resposta.status_code == 200:
-            conteudo = resposta.text
-            # Se a página mudou e já não mostra a mensagem clássica de indisponível
-            if "No hay citas disponibles" not in conteudo and "Elección del servicio" not in conteudo:
+        if resposta.status_code != 200:
+            return False
+
+        # Passo 2: Simular o envio do formulário de Getafe / Nacionalidade para "Continuar"
+        dados_formulario = {
+            "rbtnCentro": "28067401",
+            "sServicio": "NACIONALIDAD V.S.P",
+            "btnContinuar": "Continuar"
+        }
+        
+        resposta_post = session.post(URL, headers=headers, data=dados_formulario, timeout=15)
+        conteudo = resposta_post.text
+        
+        # O robô só considera sucesso SE PASSAR da página inicial de selección/indisponibilidad
+        if "Acciones" in conteudo or "Día y hora de la cita" in conteudo or "Seleccione la operación" not in conteudo:
+            if "No hay citas disponibles" not in conteudo:
                 return True
+                
     except Exception as e:
-        print(f"Erro na verificação: {e}")
+        print(f"Erro na tentativa de avanço: {e}")
         
     return False
 
 tentativa = 1
-print("A iniciar o monitoramento contínuo...")
+print("A iniciar o monitoramento focado em transpor a tela de citas...")
 
 # Mensagem inicial de arranque
-enviar_alerta("🚀 Robô de Getafe configurado! A verificar vagas de 5 em 5 minutos com alertas repetidos.")
+enviar_alerta("🚀 Robô configurado! A monitorizar e a tentar passar da tela de Getafe de 5 em 5 minutos.")
 
 while True:
     try:
-        print(f"[Tentativa {tentativa}] Verificando o Portal de Justiça (Getafe)...")
+        print(f"[Tentativa {tentativa}] A tentar avançar no portal de Getafe...")
         
-        if verificar_vaga():
-            # Dispara alertas repetidos para o Telegram chamar a atenção
-            for i in range(5):
-                msg = f"🚨 ALERTA DE CITA (Tentativa {i+1}) 🚨\nVagas detetadas ou alteração no portal!\nAceda imediatamente: {URL}"
+        if tentar_avancar_pagina():
+            # Sucesso! Conseguiu passar da página. Dispara alertas repetidos para o Telegram.
+            for i in range(10):
+                msg = f"🚨 SUCESSO ABSOLUTO (Aviso {i+1}/10) 🚨\nO robô conseguiu PASSAR da página de indisponibilidade!\nAceda imediatamente: {URL}"
                 enviar_alerta(msg)
                 time.sleep(2)
+            break # Termina o ciclo para te dar total liberdade de agendamento
         else:
-            print("Sem vagas no momento. A aguardar 5 minutos para a próxima verificação...")
+            print("Ainda bloqueado na tela inicial / sem vagas. A aguardar 5 minutos...")
             
     except Exception as e:
         print(f"Erro no ciclo: {e}")
     
     tentativa += 1
-    # Pausa exata de 5 minutos (300 segundos) entre cada verificação
+    # Pausa de 5 minutos (300 segundos) entre cada verificação
     time.sleep(300)
