@@ -1,8 +1,7 @@
 import time
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from playwright.sync_api import sync_playwright
 import requests
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # --- SERVIDOR WEB SECUNDÁRIO (Para manter a conta Free do Render ativa) ---
 class SimpleHandler(BaseHTTPRequestHandler):
@@ -19,7 +18,7 @@ threading.Thread(target=run_server, daemon=True).start()
 
 
 # --- CONFIGURAÇÕES DO ROBÔ ---
-URL = "https://gestiona7.madrid.org/ctac_cita/registro#"
+URL_BASE = "https://gestiona7.madrid.org/ctac_cita/registro"
 
 # COLOCA AQUI OS TEUS DADOS REAIS ENTRE AS ASPAS:
 TELEGRAM_TOKEN = "8772689124:AAHVK1i6dYQDbPvWVUTuB6yI3QQpANrd1L8"
@@ -33,90 +32,60 @@ def enviar_alerta(mensagem):
         except Exception as e:
             print(f"Erro ao enviar aviso: {e}")
 
-def navegar_e_verificar():
-    with sync_playwright() as p:
-        # Lança o navegador automático em modo invisível (headless)
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        page = context.new_page()
+def executar_fluxo_getafe():
+    session = requests.Session()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": URL_BASE
+    }
 
-        try:
-            # 1. Acessa a URL inicial
-            page.goto(URL, timeout=30000)
-            page.wait_for_timeout(2000)
+    try:
+        # Step 1: Carregar a página de início (Solicitar Cita)
+        res1 = session.get(URL_BASE, headers=headers, timeout=15)
+        if res1.status_code != 200:
+            return False
 
-            # 2. Clica em "SOLICITAR CITA" se essa opção estiver na primeira tela
-            if page.is_visible("text=SOLICITAR CITA"):
-                page.click("text=SOLICITAR CITA")
-                page.wait_for_timeout(2000)
+        # Step 2: Enviar a seleção de Registro Civil de Getafe + NACIONALIDAD V.S.P
+        # Simula o clique no botão "Continuar"
+        payload = {
+            "rbtnCentro": "28067401",  # Código do centro Registro Civil de Getafe
+            "sServicio": "NACIONALIDAD V.S.P",
+            "btnContinuar": "Continuar"
+        }
 
-            # 3. Seleciona "Registro Civil de Getafe" no campo de seleção de centro
-            # Procura pelo select do centro e escolhe a opção correspondente a Getafe
-            select_centro = page.locator("select").nth(0)
-            if select_centro.is_visible():
-                select_centro.select_option(label="Registro Civil de Getafe")
-                page.wait_for_timeout(1000)
+        res2 = session.post(URL_BASE, headers=headers, data=payload, timeout=15)
+        conteudo = res2.text
 
-            # 4. Seleciona "NACIONALIDAD V.S.P" no campo de serviço
-            select_servicio = page.locator("select").nth(1)
-            if select_servicio.is_visible():
-                select_servicio.select_option(label="NACIONALIDAD V.S.P")
-                page.wait_for_timeout(1000)
+        # Apenas considera sucesso SE a resposta contiver elementos da fase seguinte:
+        # Passou para seleção de data/hora ou dados pessoais E não tem mensagem de indisponibilidade
+        passou_de_fase = "Día y hora de la cita" in conteudo or "Datos personales" in conteudo
+        tem_indisponibilidade = "No hay citas disponibles" in conteudo or "En este momento no disponemos de citas" in conteudo
 
-            # 5. Clica no botão "Continuar"
-            if page.is_visible("text=Continuar") or page.is_visible("input[value='Continuar']"):
-                page.click("text=Continuar")
-                page.wait_for_timeout(3000)
+        if passou_de_fase and not tem_indisponibilidade:
+            return True
 
-            # 6. Avalia o conteúdo da página após clicar em Continuar
-            conteudo = page.content()
+    except Exception as e:
+        print(f"Erro ao executar o fluxo: {e}")
 
-            # Se passar da tela e não exibir a frase de falta de vagas
-            indisponivel = (
-                "No hay citas disponibles" in conteudo or 
-                "En este momento no disponemos de citas" in conteudo
-            )
-
-            # Se avançou de tela (ex: aparece seleção de dia/hora ou dados pessoais)
-            sucesso_avanco = (
-                "Día y hora de la cita" in conteudo or 
-                "Datos personales" in conteudo or 
-                "Acciones" in conteudo
-            )
-
-            browser.close()
-
-            if sucesso_avanco and not indisponivel:
-                return True
-
-        except Exception as e:
-            print(f"Erro durante a navegação automática: {e}")
-            try:
-                browser.close()
-            except:
-                pass
-
-        return False
+    return False
 
 tentativa = 1
-print("A iniciar o monitoramento com navegação automática de formulário...")
+print("A iniciar o monitoramento com fluxo completo...")
 
-enviar_alerta("🚀 Robô com navegação automática iniciado! A selecionar Getafe + Nacionalidad V.S.P de 5 em 5 minutos.")
+enviar_alerta("🚀 Robô reconfigurado! Fluxo (Solicitar Cita -> Getafe -> Nacionalidad V.S.P -> Continuar) ativo de 5 em 5 minutos.")
 
 while True:
     try:
-        print(f"[Tentativa {tentativa}] A executar fluxo: Solicitar -> Getafe -> Nacionalidad V.S.P -> Continuar...")
-        
-        if navegar_e_verificar():
+        print(f"[Tentativa {tentativa}] A simular fluxo completo no portal...")
+
+        if executar_fluxo_getafe():
             for i in range(5):
-                msg = f"🚨 VAGA ENCONTRADA EM GETAFE! 🚨\nO robô passou da seleção e encontrou datas disponíveis!\nAceda imediatamente: {URL}"
+                msg = f"🚨 VAGA CONFIRMADA EM GETAFE! 🚨\nO robô passou por todas as telas e encontrou datas!\nAceda imediatamente: {URL_BASE}"
                 enviar_alerta(msg)
                 time.sleep(2)
             break
         else:
-            print("Página de indisponibilidade/sem vagas após submeter formulário. Aguardando 5 minutos...")
+            print("Resultado: Indisponível/Sem vagas após o botão Continuar. Aguardando 5 minutos...")
 
     except Exception as e:
         print(f"Erro no ciclo: {e}")
