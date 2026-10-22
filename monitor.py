@@ -1,9 +1,10 @@
 import time
 import threading
-import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from playwright.sync_api import sync_playwright
+import requests
 
-# --- SERVIDOR WEB SECUNDÁRIO (Necessário para a conta Free do Render) ---
+# --- SERVIDOR WEB SECUNDÁRIO (Para manter a conta Free do Render ativa) ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -32,58 +33,93 @@ def enviar_alerta(mensagem):
         except Exception as e:
             print(f"Erro ao enviar aviso: {e}")
 
-def verificar_vaga_real():
-    session = requests.Session()
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    
-    try:
-        resposta = session.get(URL, headers=headers, timeout=15)
-        
-        # Garante que o site respondeu corretamente (Código HTTP 200)
-        if resposta.status_code == 200:
-            conteudo = resposta.text
-            
-            # Textos típicos de quando NÃO HÁ vagas ou a seleção está bloqueada
+def navegar_e_verificar():
+    with sync_playwright() as p:
+        # Lança o navegador automático em modo invisível (headless)
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
+
+        try:
+            # 1. Acessa a URL inicial
+            page.goto(URL, timeout=30000)
+            page.wait_for_timeout(2000)
+
+            # 2. Clica em "SOLICITAR CITA" se essa opção estiver na primeira tela
+            if page.is_visible("text=SOLICITAR CITA"):
+                page.click("text=SOLICITAR CITA")
+                page.wait_for_timeout(2000)
+
+            # 3. Seleciona "Registro Civil de Getafe" no campo de seleção de centro
+            # Procura pelo select do centro e escolhe a opção correspondente a Getafe
+            select_centro = page.locator("select").nth(0)
+            if select_centro.is_visible():
+                select_centro.select_option(label="Registro Civil de Getafe")
+                page.wait_for_timeout(1000)
+
+            # 4. Seleciona "NACIONALIDAD V.S.P" no campo de serviço
+            select_servicio = page.locator("select").nth(1)
+            if select_servicio.is_visible():
+                select_servicio.select_option(label="NACIONALIDAD V.S.P")
+                page.wait_for_timeout(1000)
+
+            # 5. Clica no botão "Continuar"
+            if page.is_visible("text=Continuar") or page.is_visible("input[value='Continuar']"):
+                page.click("text=Continuar")
+                page.wait_for_timeout(3000)
+
+            # 6. Avalia o conteúdo da página após clicar em Continuar
+            conteudo = page.content()
+
+            # Se passar da tela e não exibir a frase de falta de vagas
             indisponivel = (
                 "No hay citas disponibles" in conteudo or 
-                "En este momento no disponemos de citas" in conteudo or
-                "no hay fechas disponibles" in conteudo.lower()
+                "En este momento no disponemos de citas" in conteudo
             )
-            
-            # Se a página carregou perfeitamente e NENHUMA das frases de indisponibilidade apareceu:
-            if not indisponivel:
+
+            # Se avançou de tela (ex: aparece seleção de dia/hora ou dados pessoais)
+            sucesso_avanco = (
+                "Día y hora de la cita" in conteudo or 
+                "Datos personales" in conteudo or 
+                "Acciones" in conteudo
+            )
+
+            browser.close()
+
+            if sucesso_avanco and not indisponivel:
                 return True
 
-    except Exception as e:
-        print(f"Erro na ligação ao portal: {e}")
-        
-    return False
+        except Exception as e:
+            print(f"Erro durante a navegação automática: {e}")
+            try:
+                browser.close()
+            except:
+                pass
+
+        return False
 
 tentativa = 1
-print("A iniciar o monitoramento ultra-preciso...")
+print("A iniciar o monitoramento com navegação automática de formulário...")
 
-# Mensagem de arranque para saberes que está ativo
-enviar_alerta("🚀 Monitor ajustado! Sensibilidade máxima ativada. Verificando de 5 em 5 minutos sem falsos alarmes.")
+enviar_alerta("🚀 Robô com navegação automática iniciado! A selecionar Getafe + Nacionalidad V.S.P de 5 em 5 minutos.")
 
 while True:
     try:
-        print(f"[Tentativa {tentativa}] Verificando o portal...")
+        print(f"[Tentativa {tentativa}] A executar fluxo: Solicitar -> Getafe -> Nacionalidad V.S.P -> Continuar...")
         
-        if verificar_vaga_real():
-            # Apenas envia quando detetar uma alteração real na página
+        if navegar_e_verificar():
             for i in range(5):
-                msg = f"🚨 VAGA DETETADA EM GETAFE! 🚨\nO portal atualizou e há datas disponíveis!\nAceda imediatamente: {URL}"
+                msg = f"🚨 VAGA ENCONTRADA EM GETAFE! 🚨\nO robô passou da seleção e encontrou datas disponíveis!\nAceda imediatamente: {URL}"
                 enviar_alerta(msg)
                 time.sleep(2)
-            break # Para o robô para não inundar o Telegram enquanto tentas agendar
+            break
         else:
-            print("Página verificada: Indisponível/Sem vagas no momento. Aguardando 5 minutos...")
-            
+            print("Página de indisponibilidade/sem vagas após submeter formulário. Aguardando 5 minutos...")
+
     except Exception as e:
         print(f"Erro no ciclo: {e}")
-    
+
     tentativa += 1
-    # Pausa de 5 minutos (300 segundos) entre verificações
     time.sleep(300)
